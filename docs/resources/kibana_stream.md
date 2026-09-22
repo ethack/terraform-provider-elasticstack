@@ -31,7 +31,7 @@ Three stream types are supported:
 - `dashboards` (List of String) List of dashboard IDs to link to this stream.
 - `description` (String) A human-readable description of the stream.
 - `kibana_connection` (Block List) Kibana connection configuration block. (see [below for nested schema](#nestedblock--kibana_connection))
-- `queries` (Attributes List) ES|QL queries attached to this stream. (see [below for nested schema](#nestedatt--queries))
+- `queries` (Attributes List) ES|QL queries attached to this stream. Supported on Elastic Stack 9.4.x only: Kibana 9.5.0 and later, including Serverless, manage significant-event queries outside the stream API, and configuring this attribute against them fails at apply. (see [below for nested schema](#nestedatt--queries))
 - `query_config` (Attributes) Configuration for a query stream. Query streams are virtual streams defined by an ES|QL query. Mutually exclusive with `wired_config` and `classic_config`. (see [below for nested schema](#nestedatt--query_config))
 - `space_id` (String) An identifier for the space. If space_id is not provided, the default space is used.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))

@@ -488,7 +488,7 @@ func TestToAPIUpsertRequest(t *testing.T) {
 			Dashboards: types.ListNull(types.StringType),
 		}
 		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, &diags)
+		req := m.toAPIUpsertRequest(ctx, true, &diags)
 		require.False(t, diags.HasError())
 		assert.Equal(t, streamTypeWired, req.Stream.Type)
 		assert.Equal(t, "Nginx logs", req.Stream.Description)
@@ -509,7 +509,7 @@ func TestToAPIUpsertRequest(t *testing.T) {
 			Dashboards: types.ListNull(types.StringType),
 		}
 		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, &diags)
+		req := m.toAPIUpsertRequest(ctx, true, &diags)
 		require.False(t, diags.HasError())
 		assert.Equal(t, streamTypeQuery, req.Stream.Type)
 		assert.Nil(t, req.Stream.Ingest)
@@ -549,15 +549,125 @@ func TestToAPIUpsertRequest(t *testing.T) {
 			},
 		}
 		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, &diags)
+		req := m.toAPIUpsertRequest(ctx, true, &diags)
 		require.False(t, diags.HasError())
-		require.Len(t, req.Queries, 1)
-		q := req.Queries[0]
+		require.NotNil(t, req.Queries)
+		require.Len(t, *req.Queries, 1)
+		q := (*req.Queries)[0]
 		assert.Equal(t, "q1", q.ID)
 		assert.Equal(t, "High errors", q.Title)
 		assert.Equal(t, "Detects 5xx rates", q.Description)
 		assert.Equal(t, "FROM logs.nginx | WHERE http.status >= 500", q.Esql.Query)
 		require.NotNil(t, q.SeverityScore)
 		assert.InDelta(t, float32(70), *q.SeverityScore, 0.001)
+	})
+}
+
+// ── upsert body `queries` key, by Kibana version ──────────────────────────────
+
+func newMinimalWiredStreamModel() streamModel {
+	return streamModel{
+		Name:        types.StringValue("logs.otel.nginx"),
+		SpaceID:     types.StringValue("default"),
+		Description: types.StringValue(""),
+		WiredConfig: &wiredConfigModel{
+			ProcessingSteps:       types.ListNull(jsontypes.NormalizedType{}),
+			FieldsJSON:            jsontypes.NewNormalizedNull(),
+			RoutingJSON:           jsontypes.NewNormalizedNull(),
+			LifecycleJSON:         jsontypes.NewNormalizedNull(),
+			FailureStoreJSON:      jsontypes.NewNormalizedNull(),
+			IndexNumberOfShards:   types.Int64Null(),
+			IndexNumberOfReplicas: types.Int64Null(),
+			IndexRefreshInterval:  types.StringNull(),
+		},
+		Dashboards: types.ListNull(types.StringType),
+	}
+}
+
+func withOneQuery(m streamModel) streamModel {
+	m.Queries = []streamQueryModel{
+		{
+			ID:            types.StringValue("q1"),
+			Title:         types.StringValue("High errors"),
+			Description:   types.StringValue(""),
+			Esql:          types.StringValue("FROM logs.otel.nginx | WHERE http.response.status_code >= 500"),
+			SeverityScore: types.Float64Null(),
+			Evidence:      types.ListNull(types.StringType),
+		},
+	}
+	return m
+}
+
+// marshalUpsertBody encodes the request the way kibanaoapi.UpsertStream does
+// and returns its top-level keys.
+func marshalUpsertBody(t *testing.T, req kibanaoapi.StreamUpsertRequest) map[string]json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body, &top))
+	return top
+}
+
+func TestToAPIUpsertRequestQueriesKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Kibana 9.5.0+ and Serverless validate the PUT /api/streams/{name} body
+	// strictly and reject a top-level "queries" key with HTTP 400
+	// {"code":"unrecognized_keys","keys":["queries"]} (elastic/kibana#274128).
+	t.Run("Kibana 9.5+ body has no queries key when none are configured", func(t *testing.T) {
+		t.Parallel()
+		m := newMinimalWiredStreamModel()
+		var diags diag.Diagnostics
+		req := m.toAPIUpsertRequest(ctx, false, &diags)
+		require.False(t, diags.HasError())
+
+		top := marshalUpsertBody(t, req)
+		assert.NotContains(t, top, "queries")
+		assert.JSONEq(t, `[]`, string(top["dashboards"]))
+		assert.JSONEq(t, `[]`, string(top["rules"]))
+	})
+
+	t.Run("Kibana 9.5+ rejects configured queries with an attribute error", func(t *testing.T) {
+		t.Parallel()
+		m := withOneQuery(newMinimalWiredStreamModel())
+		var diags diag.Diagnostics
+		req := m.toAPIUpsertRequest(ctx, false, &diags)
+		require.True(t, diags.HasError())
+		require.Len(t, diags.Errors(), 1)
+		withPath, ok := diags.Errors()[0].(diag.DiagnosticWithPath)
+		require.True(t, ok, "error should be attached to an attribute path")
+		assert.Equal(t, "queries", withPath.Path().String())
+		assert.Contains(t, diags.Errors()[0].Detail(), "Kibana 9.5.0 and later")
+
+		assert.NotContains(t, marshalUpsertBody(t, req), "queries")
+	})
+
+	// Kibana 9.4 requires a "queries" array in the upsert body, even when empty.
+	t.Run("Kibana 9.4 body carries an empty queries array when none are configured", func(t *testing.T) {
+		t.Parallel()
+		m := newMinimalWiredStreamModel()
+		var diags diag.Diagnostics
+		req := m.toAPIUpsertRequest(ctx, true, &diags)
+		require.False(t, diags.HasError())
+
+		top := marshalUpsertBody(t, req)
+		require.Contains(t, top, "queries")
+		assert.JSONEq(t, `[]`, string(top["queries"]))
+	})
+
+	t.Run("Kibana 9.4 body carries configured queries", func(t *testing.T) {
+		t.Parallel()
+		m := withOneQuery(newMinimalWiredStreamModel())
+		var diags diag.Diagnostics
+		req := m.toAPIUpsertRequest(ctx, true, &diags)
+		require.False(t, diags.HasError())
+
+		top := marshalUpsertBody(t, req)
+		require.Contains(t, top, "queries")
+		assert.JSONEq(t,
+			`[{"id":"q1","title":"High errors","description":"","esql":{"query":"FROM logs.otel.nginx | WHERE http.response.status_code >= 500"}}]`,
+			string(top["queries"]))
 	})
 }

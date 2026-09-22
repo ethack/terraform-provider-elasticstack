@@ -138,7 +138,7 @@ func prepareStreamsEnvironment(t *testing.T) {
 		},
 		Dashboards: []string{},
 		Rules:      []string{},
-		Queries:    []kibanaoapi.StreamQuery{},
+		Queries:    upsertQueriesFor(kibanaAPIClient),
 	}
 	_, diags := kibanaoapi.UpsertStream(context.Background(), kibanaClient, "default", logsRoot, req)
 	if diags.HasError() {
@@ -190,7 +190,7 @@ func prepareStreamsEnvironment(t *testing.T) {
 		},
 		Dashboards: []string{},
 		Rules:      []string{},
-		Queries:    []kibanaoapi.StreamQuery{},
+		Queries:    upsertQueriesFor(kibanaAPIClient),
 	}
 	// Use a unique probe name so parallel test runs don't conflict.
 	probeName := logsRoot + ".__tfacc_probe_" + sdkacctest.RandStringFromCharSet(6, sdkacctest.CharSetAlphaNum) + "__"
@@ -335,14 +335,34 @@ func TestAccResourceKibanaStreamWired(t *testing.T) {
 	})
 }
 
-// checkStreamQueriesEnabled returns a SkipFunc that skips when the Kibana
-// Streams "significant events" feature is not enabled
+// upsertQueriesFor returns the `queries` value a hand-built upsert request must
+// carry: an empty array for Kibana 9.4, which requires the key, and nil (key
+// omitted) for Kibana 9.5.0+ and Serverless, which reject it.
+func upsertQueriesFor(c *clients.KibanaScopedClient) *[]kibanaoapi.StreamQuery {
+	rejected, diags := c.EnforceMinVersion(context.Background(), kibanaoapi.StreamsUpsertWithoutQueriesMinVersion)
+	if diags.HasError() || rejected {
+		return nil
+	}
+	return &[]kibanaoapi.StreamQuery{}
+}
+
+// checkStreamQueriesEnabled returns a SkipFunc that skips when the resource
+// cannot write attached queries: on Kibana 9.5.0+ and Serverless, where the
+// upsert API no longer accepts them, or when the Kibana Streams "significant
+// events" feature is not enabled
 // (requires observability:streamsEnableSignificantEvents).
 func checkStreamQueriesEnabled() func() (bool, error) {
 	return func() (bool, error) {
 		apiClient, err := clients.NewAcceptanceTestingKibanaScopedClient()
 		if err != nil {
 			return false, err
+		}
+		rejected, diags := apiClient.EnforceMinVersion(context.Background(), kibanaoapi.StreamsUpsertWithoutQueriesMinVersion)
+		if diags.HasError() {
+			return false, fmt.Errorf("checking Kibana version: %s: %s", diags[0].Summary(), diags[0].Detail())
+		}
+		if rejected {
+			return true, nil
 		}
 		kbClient := apiClient.GetKibanaOapiClient()
 		// Probe: attempt to GET the queries sub-resource of a well-known stream.
@@ -381,7 +401,7 @@ func checkQueryStreamsEnabled() func() (bool, error) {
 			},
 			Dashboards: []string{},
 			Rules:      []string{},
-			Queries:    []kibanaoapi.StreamQuery{},
+			Queries:    upsertQueriesFor(apiClient),
 		}
 		_, diags := kibanaoapi.UpsertStream(context.Background(), kibanaClient, "default", probeName, probe)
 		if diags.HasError() {
