@@ -563,7 +563,7 @@ func TestToAPIUpsertRequest(t *testing.T) {
 	})
 }
 
-// ── upsert body `queries` key, by Kibana version ──────────────────────────────
+// ── toAPIUpsertRequest queries key ────────────────────────────────────────────
 
 func newMinimalWiredStreamModel() streamModel {
 	return streamModel{
@@ -613,61 +613,65 @@ func TestToAPIUpsertRequestQueriesKey(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// Kibana 9.5.0+ and Serverless validate the PUT /api/streams/{name} body
-	// strictly and reject a top-level "queries" key with HTTP 400
-	// {"code":"unrecognized_keys","keys":["queries"]} (elastic/kibana#274128).
-	t.Run("Kibana 9.5+ body has no queries key when none are configured", func(t *testing.T) {
-		t.Parallel()
-		m := newMinimalWiredStreamModel()
-		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, false, &diags)
-		require.False(t, diags.HasError())
+	// Kibana 9.5.0+ and Serverless reject a top-level "queries" key with HTTP 400
+	// {"code":"unrecognized_keys","keys":["queries"]}; Kibana 9.4 requires it.
+	tests := []struct {
+		name           string
+		includeQueries bool
+		withQuery      bool
+		wantErr        bool
+		wantQueries    string // JSON of the "queries" key; empty means the key is absent
+	}{
+		{
+			name: "9.5+ omits queries when none are configured",
+		},
+		{
+			name:      "9.5+ rejects configured queries with an attribute error",
+			withQuery: true,
+			wantErr:   true,
+		},
+		{
+			name:           "9.4 sends an empty queries array when none are configured",
+			includeQueries: true,
+			wantQueries:    `[]`,
+		},
+		{
+			name:           "9.4 sends configured queries",
+			includeQueries: true,
+			withQuery:      true,
+			wantQueries:    `[{"id":"q1","title":"High errors","description":"","esql":{"query":"FROM logs.otel.nginx | WHERE http.response.status_code >= 500"}}]`,
+		},
+	}
 
-		top := marshalUpsertBody(t, req)
-		assert.NotContains(t, top, "queries")
-		assert.JSONEq(t, `[]`, string(top["dashboards"]))
-		assert.JSONEq(t, `[]`, string(top["rules"]))
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newMinimalWiredStreamModel()
+			if tt.withQuery {
+				m = withOneQuery(m)
+			}
+			var diags diag.Diagnostics
+			req := m.toAPIUpsertRequest(ctx, tt.includeQueries, &diags)
 
-	t.Run("Kibana 9.5+ rejects configured queries with an attribute error", func(t *testing.T) {
-		t.Parallel()
-		m := withOneQuery(newMinimalWiredStreamModel())
-		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, false, &diags)
-		require.True(t, diags.HasError())
-		require.Len(t, diags.Errors(), 1)
-		withPath, ok := diags.Errors()[0].(diag.DiagnosticWithPath)
-		require.True(t, ok, "error should be attached to an attribute path")
-		assert.Equal(t, "queries", withPath.Path().String())
-		assert.Contains(t, diags.Errors()[0].Detail(), "Kibana 9.5.0 and later")
+			if tt.wantErr {
+				require.Len(t, diags.Errors(), 1)
+				withPath, ok := diags.Errors()[0].(diag.DiagnosticWithPath)
+				require.True(t, ok, "error should be attached to an attribute path")
+				assert.Equal(t, "queries", withPath.Path().String())
+				assert.Contains(t, diags.Errors()[0].Detail(), "Kibana 9.5.0 and later")
+			} else {
+				require.False(t, diags.HasError())
+			}
 
-		assert.NotContains(t, marshalUpsertBody(t, req), "queries")
-	})
-
-	// Kibana 9.4 requires a "queries" array in the upsert body, even when empty.
-	t.Run("Kibana 9.4 body carries an empty queries array when none are configured", func(t *testing.T) {
-		t.Parallel()
-		m := newMinimalWiredStreamModel()
-		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, true, &diags)
-		require.False(t, diags.HasError())
-
-		top := marshalUpsertBody(t, req)
-		require.Contains(t, top, "queries")
-		assert.JSONEq(t, `[]`, string(top["queries"]))
-	})
-
-	t.Run("Kibana 9.4 body carries configured queries", func(t *testing.T) {
-		t.Parallel()
-		m := withOneQuery(newMinimalWiredStreamModel())
-		var diags diag.Diagnostics
-		req := m.toAPIUpsertRequest(ctx, true, &diags)
-		require.False(t, diags.HasError())
-
-		top := marshalUpsertBody(t, req)
-		require.Contains(t, top, "queries")
-		assert.JSONEq(t,
-			`[{"id":"q1","title":"High errors","description":"","esql":{"query":"FROM logs.otel.nginx | WHERE http.response.status_code >= 500"}}]`,
-			string(top["queries"]))
-	})
+			top := marshalUpsertBody(t, req)
+			assert.JSONEq(t, `[]`, string(top["dashboards"]))
+			assert.JSONEq(t, `[]`, string(top["rules"]))
+			if tt.wantQueries == "" {
+				assert.NotContains(t, top, "queries")
+			} else {
+				require.Contains(t, top, "queries")
+				assert.JSONEq(t, tt.wantQueries, string(top["queries"]))
+			}
+		})
+	}
 }

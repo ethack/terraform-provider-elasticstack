@@ -282,14 +282,10 @@ func (m *streamModel) populateFromAPI(ctx context.Context, resp *kibanaoapi.Stre
 	return diags
 }
 
-// toAPIUpsertRequest builds the PUT /api/streams/{name} body. includeQueries
-// selects the request shape for the target Kibana: true for versions before
-// kibanaoapi.StreamsUpsertWithoutQueriesMinVersion, which require a `queries`
-// array, and false for later versions and Serverless, which reject the key.
-// When includeQueries is false and `queries` is configured, it adds an error
-// diagnostic, because this resource has no other way to write them.
+// toAPIUpsertRequest converts the Terraform model to an API upsert request.
+// includeQueries is false for Kibana versions that reject the `queries` key.
 func (m *streamModel) toAPIUpsertRequest(ctx context.Context, includeQueries bool, diags *diag.Diagnostics) kibanaoapi.StreamUpsertRequest {
-	// Initialise the required array fields as empty slices, not nil.
+	// Initialise all required array fields as empty slices, not nil.
 	// The API rejects requests where these are absent or null.
 	streamType := m.streamType()
 	req := kibanaoapi.StreamUpsertRequest{
@@ -333,25 +329,29 @@ func (m *streamModel) toAPIUpsertRequest(ctx context.Context, includeQueries boo
 		return req
 	}
 
-	queries := make([]kibanaoapi.StreamQuery, 0, len(m.Queries))
-	for _, qm := range m.Queries {
-		q := kibanaoapi.StreamQuery{
-			ID:          qm.ID.ValueString(),
-			Title:       qm.Title.ValueString(),
-			Description: qm.Description.ValueString(),
-			Esql:        kibanaoapi.StreamQueryEsql{Query: qm.Esql.ValueString()},
-		}
-		if typeutils.IsKnown(qm.SeverityScore) {
-			score := float32(qm.SeverityScore.ValueFloat64())
-			q.SeverityScore = &score
-		}
-		if typeutils.IsKnown(qm.Evidence) {
-			evidence := typeutils.ListTypeToSliceString(ctx, qm.Evidence, path.Root("queries"), diags)
-			if evidence != nil {
-				q.Evidence = &evidence
+	// Map queries — queries starts as []{}; append if present
+	queries := []kibanaoapi.StreamQuery{}
+	if len(m.Queries) > 0 {
+		queries = make([]kibanaoapi.StreamQuery, 0, len(m.Queries))
+		for _, qm := range m.Queries {
+			q := kibanaoapi.StreamQuery{
+				ID:          qm.ID.ValueString(),
+				Title:       qm.Title.ValueString(),
+				Description: qm.Description.ValueString(),
+				Esql:        kibanaoapi.StreamQueryEsql{Query: qm.Esql.ValueString()},
 			}
+			if typeutils.IsKnown(qm.SeverityScore) {
+				score := float32(qm.SeverityScore.ValueFloat64())
+				q.SeverityScore = &score
+			}
+			if typeutils.IsKnown(qm.Evidence) {
+				evidence := typeutils.ListTypeToSliceString(ctx, qm.Evidence, path.Root("queries"), diags)
+				if evidence != nil {
+					q.Evidence = &evidence
+				}
+			}
+			queries = append(queries, q)
 		}
-		queries = append(queries, q)
 	}
 	req.Queries = &queries
 

@@ -141,19 +141,14 @@ type StreamQueryEsql struct {
 }
 
 // StreamsUpsertWithoutQueriesMinVersion is the first Kibana version whose
-// PUT /api/streams/{name} rejects a top-level `queries` key. From this version
-// on (and on Serverless), significant-event queries are managed outside the
-// stream upsert, and Kibana validates the upsert body strictly, so `queries`
-// fails with HTTP 400 "unrecognized_keys". Earlier versions require the key.
-// See elastic/kibana#274128.
+// PUT /api/streams/{name} rejects a `queries` key (elastic/kibana#274128).
+// Earlier versions require it.
 var StreamsUpsertWithoutQueriesMinVersion = version.Must(version.NewVersion("9.5.0-SNAPSHOT"))
 
 // StreamUpsertRequest is the body for PUT /api/streams/{name}.
-// Dashboards and Rules are required by the API and must be present even when
-// empty (sending null or omitting them causes HTTP 400).
-// Queries must be a non-nil pointer (an empty array is fine) for Kibana
-// versions before StreamsUpsertWithoutQueriesMinVersion, and nil from that
-// version on so that the key is omitted.
+// Dashboards and Rules are required by the API — they must be present even
+// when empty (sending null or omitting them causes HTTP 400). Queries is nil
+// from StreamsUpsertWithoutQueriesMinVersion on, which omits the key.
 type StreamUpsertRequest struct {
 	Stream     StreamDefinition `json:"stream"`
 	Dashboards []string         `json:"dashboards"`
