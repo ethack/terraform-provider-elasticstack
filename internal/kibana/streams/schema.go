@@ -106,7 +106,7 @@ func getSchema(_ context.Context) schema.Schema {
 				Optional:            true,
 			},
 			"queries": schema.ListNestedAttribute{
-				MarkdownDescription: "ES|QL queries attached to this stream.",
+				MarkdownDescription: "ES|QL queries attached to this stream. Supported on Elastic Stack 9.4.x only: Kibana 9.5.0 and later, including Serverless, manage significant-event queries outside the stream API, and configuring this attribute against them fails at apply.",
 				Optional:            true,
 				NestedObject:        getStreamQuerySchema(),
 			},

@@ -125,6 +125,11 @@ func prepareStreamsEnvironment(t *testing.T) {
 		}
 	}
 
+	queries, err := upsertQueriesFor(kibanaAPIClient)
+	if err != nil {
+		t.Fatalf("prepareStreamsEnvironment: %v", err)
+	}
+
 	req := kibanaoapi.StreamUpsertRequest{
 		Stream: kibanaoapi.StreamDefinition{
 			Type:        "wired",
@@ -138,7 +143,7 @@ func prepareStreamsEnvironment(t *testing.T) {
 		},
 		Dashboards: []string{},
 		Rules:      []string{},
-		Queries:    []kibanaoapi.StreamQuery{},
+		Queries:    queries,
 	}
 	_, diags := kibanaoapi.UpsertStream(context.Background(), kibanaClient, "default", logsRoot, req)
 	if diags.HasError() {
@@ -190,7 +195,7 @@ func prepareStreamsEnvironment(t *testing.T) {
 		},
 		Dashboards: []string{},
 		Rules:      []string{},
-		Queries:    []kibanaoapi.StreamQuery{},
+		Queries:    queries,
 	}
 	// Use a unique probe name so parallel test runs don't conflict.
 	probeName := logsRoot + ".__tfacc_probe_" + sdkacctest.RandStringFromCharSet(6, sdkacctest.CharSetAlphaNum) + "__"
@@ -335,14 +340,35 @@ func TestAccResourceKibanaStreamWired(t *testing.T) {
 	})
 }
 
-// checkStreamQueriesEnabled returns a SkipFunc that skips when the Kibana
-// Streams "significant events" feature is not enabled
+// upsertQueriesFor returns the `queries` value for a hand-built upsert request:
+// an empty array before 9.5.0, and nil (key omitted) from 9.5.0 and on Serverless.
+func upsertQueriesFor(c *clients.KibanaScopedClient) (*[]kibanaoapi.StreamQuery, error) {
+	rejected, diags := c.EnforceMinVersion(context.Background(), kibanaoapi.StreamsUpsertWithoutQueriesMinVersion)
+	if diags.HasError() {
+		return nil, fmt.Errorf("checking Kibana version: %s: %s", diags[0].Summary(), diags[0].Detail())
+	}
+	if rejected {
+		return nil, nil
+	}
+	return &[]kibanaoapi.StreamQuery{}, nil
+}
+
+// checkStreamQueriesEnabled returns a SkipFunc that skips on Kibana 9.5.0+ and
+// Serverless, whose upsert API rejects `queries`, and when the Kibana Streams
+// "significant events" feature is not enabled
 // (requires observability:streamsEnableSignificantEvents).
 func checkStreamQueriesEnabled() func() (bool, error) {
 	return func() (bool, error) {
 		apiClient, err := clients.NewAcceptanceTestingKibanaScopedClient()
 		if err != nil {
 			return false, err
+		}
+		rejected, diags := apiClient.EnforceMinVersion(context.Background(), kibanaoapi.StreamsUpsertWithoutQueriesMinVersion)
+		if diags.HasError() {
+			return false, fmt.Errorf("checking Kibana version: %s: %s", diags[0].Summary(), diags[0].Detail())
+		}
+		if rejected {
+			return true, nil
 		}
 		kbClient := apiClient.GetKibanaOapiClient()
 		// Probe: attempt to GET the queries sub-resource of a well-known stream.
@@ -370,6 +396,10 @@ func checkQueryStreamsEnabled() func() (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		queries, err := upsertQueriesFor(apiClient)
+		if err != nil {
+			return false, err
+		}
 		kibanaClient := apiClient.GetKibanaOapiClient()
 		// Use logs.otel as parent (it is always present on 9.4+ SNAPSHOT installs).
 		// The view must be "$.{stream_name}" — the API enforces this convention.
@@ -381,7 +411,7 @@ func checkQueryStreamsEnabled() func() (bool, error) {
 			},
 			Dashboards: []string{},
 			Rules:      []string{},
-			Queries:    []kibanaoapi.StreamQuery{},
+			Queries:    queries,
 		}
 		_, diags := kibanaoapi.UpsertStream(context.Background(), kibanaClient, "default", probeName, probe)
 		if diags.HasError() {

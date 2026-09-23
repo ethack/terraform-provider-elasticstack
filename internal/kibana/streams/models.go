@@ -283,14 +283,14 @@ func (m *streamModel) populateFromAPI(ctx context.Context, resp *kibanaoapi.Stre
 }
 
 // toAPIUpsertRequest converts the Terraform model to an API upsert request.
-func (m *streamModel) toAPIUpsertRequest(ctx context.Context, diags *diag.Diagnostics) kibanaoapi.StreamUpsertRequest {
+// includeQueries is false for Kibana versions that reject the `queries` key.
+func (m *streamModel) toAPIUpsertRequest(ctx context.Context, includeQueries bool, diags *diag.Diagnostics) kibanaoapi.StreamUpsertRequest {
 	// Initialise all required array fields as empty slices, not nil.
 	// The API rejects requests where these are absent or null.
 	streamType := m.streamType()
 	req := kibanaoapi.StreamUpsertRequest{
 		Dashboards: []string{},
 		Rules:      []string{},
-		Queries:    []kibanaoapi.StreamQuery{},
 
 		// Build stream definition
 		Stream: kibanaoapi.StreamDefinition{
@@ -314,9 +314,25 @@ func (m *streamModel) toAPIUpsertRequest(ctx context.Context, diags *diag.Diagno
 		}
 	}
 
-	// Map queries — req.Queries is pre-initialised to []{}; append if present
+	if !includeQueries {
+		if len(m.Queries) > 0 {
+			diags.AddAttributeError(
+				path.Root("queries"),
+				"Attached queries are not supported by this Kibana version",
+				fmt.Sprintf("Kibana %s and later, including Elastic Cloud Serverless, no longer accept `queries` "+
+					"in the stream upsert request. Significant-event queries are managed through the "+
+					"`/api/streams/{name}/queries` endpoints, which this resource does not call. "+
+					"Remove the `queries` attribute from this resource.",
+					kibanaoapi.StreamsUpsertWithoutQueriesMinVersion.Core()),
+			)
+		}
+		return req
+	}
+
+	// Map queries — queries starts as []{}; append if present
+	queries := []kibanaoapi.StreamQuery{}
 	if len(m.Queries) > 0 {
-		req.Queries = make([]kibanaoapi.StreamQuery, 0, len(m.Queries))
+		queries = make([]kibanaoapi.StreamQuery, 0, len(m.Queries))
 		for _, qm := range m.Queries {
 			q := kibanaoapi.StreamQuery{
 				ID:          qm.ID.ValueString(),
@@ -334,9 +350,10 @@ func (m *streamModel) toAPIUpsertRequest(ctx context.Context, diags *diag.Diagno
 					q.Evidence = &evidence
 				}
 			}
-			req.Queries = append(req.Queries, q)
+			queries = append(queries, q)
 		}
 	}
+	req.Queries = &queries
 
 	return req
 }

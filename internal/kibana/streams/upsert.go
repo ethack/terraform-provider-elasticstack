@@ -35,7 +35,14 @@ func writeStream(ctx context.Context, apiClient *clients.KibanaScopedClient, pla
 	spaceID := planModel.GetSpaceID().ValueString()
 	name := planModel.GetResourceID().ValueString()
 
-	apiReq := planModel.toAPIUpsertRequest(ctx, &diags)
+	// Kibana 9.5.0+ and Serverless reject `queries` in the upsert body; 9.4 requires it.
+	queriesRejected, versionDiags := apiClient.EnforceMinVersion(ctx, kibanaoapi.StreamsUpsertWithoutQueriesMinVersion)
+	diags.Append(versionDiags...)
+	if diags.HasError() {
+		return diags
+	}
+
+	apiReq := planModel.toAPIUpsertRequest(ctx, !queriesRejected, &diags)
 	if diags.HasError() {
 		return diags
 	}

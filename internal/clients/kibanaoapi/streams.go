@@ -26,6 +26,7 @@ import (
 	"github.com/elastic/terraform-provider-elasticstack/generated/kbapi"
 	"github.com/elastic/terraform-provider-elasticstack/internal/clients/kibanautil"
 	"github.com/elastic/terraform-provider-elasticstack/internal/diagutil"
+	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 )
 
@@ -139,14 +140,20 @@ type StreamQueryEsql struct {
 	Query string `json:"query"`
 }
 
+// StreamsUpsertWithoutQueriesMinVersion is the first Kibana version whose
+// PUT /api/streams/{name} rejects a `queries` key (elastic/kibana#274128).
+// Earlier versions require it.
+var StreamsUpsertWithoutQueriesMinVersion = version.Must(version.NewVersion("9.5.0-SNAPSHOT"))
+
 // StreamUpsertRequest is the body for PUT /api/streams/{name}.
-// All three array fields are required by the API — they must be present even
-// when empty (sending null or omitting them causes HTTP 400).
+// Dashboards and Rules are required by the API — they must be present even
+// when empty (sending null or omitting them causes HTTP 400). Queries is nil
+// from StreamsUpsertWithoutQueriesMinVersion on, which omits the key.
 type StreamUpsertRequest struct {
 	Stream     StreamDefinition `json:"stream"`
 	Dashboards []string         `json:"dashboards"`
 	Rules      []string         `json:"rules"`
-	Queries    []StreamQuery    `json:"queries"`
+	Queries    *[]StreamQuery   `json:"queries,omitempty"`
 }
 
 // GetStream reads a specific stream from the API.
